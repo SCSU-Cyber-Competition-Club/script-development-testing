@@ -7,9 +7,7 @@
 
 # Enable strict error handling
 require_root_or_sudo() {
-  if [[ "${EUID:-$(id -u)}" -ne 0 ]]; then
-    die "This action must be run as root (use sudo)."
-  fi
+  [[ "${EUID:-$(id -u)}" -eq 0 ]] || die "This script must be run via sudo ./main.sh"
 }
 
 # Detect OS family and set OS_FAMILY, PKG_MGR, and PKG_CMD

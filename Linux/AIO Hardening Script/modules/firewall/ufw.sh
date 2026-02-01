@@ -18,7 +18,6 @@ ROOT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)"
 . "$ROOT_DIR/lib/detect.sh"
 
 main() {
-  require_root_or_sudo
   command -v ufw >/dev/null 2>&1 || die "ufw is not installed."
 
   [[ -n "${ROLE:-}" ]] || die "ROLE is not set."

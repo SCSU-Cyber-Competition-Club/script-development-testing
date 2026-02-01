@@ -60,7 +60,7 @@ main() {
   fi
 
   # Run installer
-  sudo "$installer" "$SPLUNK_INDEXER_IP" "$admin_user" "$admin_pass"
+  "$installer" "$SPLUNK_INDEXER_IP" "$admin_user" "$admin_pass"
 }
 
 main "$@"

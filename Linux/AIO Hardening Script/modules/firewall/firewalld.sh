@@ -20,8 +20,6 @@ ROOT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)"
 
 
 main() {
-  # Err if not run as root/sudo
-  require_root_or_sudo
   command -v firewall-cmd >/dev/null 2>&1 || die "firewall-cmd is not installed (firewalld missing)."
 
 

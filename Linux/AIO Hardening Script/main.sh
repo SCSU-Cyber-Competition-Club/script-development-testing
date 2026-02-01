@@ -34,6 +34,7 @@ ensure_exec_deps() {
     "$ROOT_DIR/modules/firewall/firewalld.sh"
     "$ROOT_DIR/modules/splunk_forwarder.sh"
     "$ROOT_DIR/linuxSplunkForwarderInstall.sh"
+    "$ROOT_DIR/modules/install_external_tools.sh"
   )
 
   local missing=()
@@ -77,7 +78,7 @@ ensure_exec_deps() {
   # Needs root if files are owned by root or extracted with restrictive perms.
   local chmod_cmd=(chmod +x)
   if [[ "${EUID:-$(id -u)}" -ne 0 ]]; then
-    chmod_cmd=(sudo chmod +x)
+    chmod_cmd=(chmod +x)
   fi
 
   "${chmod_cmd[@]}" "${need_chmod[@]}"
@@ -123,33 +124,44 @@ select_role() {
   log "ROLE set to '$ROLE' (TCP allowed: ${PORTS_TCP[*]:-(none)})"
 }
 
+# function to run preflight module
 run_preflight_module() {
-  sudo "$ROOT_DIR/modules/preflight.sh"
+  "$ROOT_DIR/modules/preflight.sh"
 }
 
+# function to run disable ssh module
 run_disable_ssh_module() {
-  require_root_or_sudo
-  sudo "$ROOT_DIR/modules/disable_ssh.sh"
+  "$ROOT_DIR/modules/disable_ssh.sh"
 }
 
+# function to run validate role module
 run_validate_role_module() {
-  sudo "$ROOT_DIR/modules/validate_role.sh"
+  "$ROOT_DIR/modules/validate_role.sh"
 }
 
+# function to run baseline hardening module
 run_baseline_module() {
-  require_root_or_sudo
-  sudo "$ROOT_DIR/modules/baseline.sh"
+  "$ROOT_DIR/modules/baseline.sh"
+}
+
+# function to run splunk forwarder module
+run_splunk_forwarder_module() {
+  "$ROOT_DIR/modules/splunk_forwarder.sh"
+}
+
+# function to run external tool installation module
+run_external_tool_install_module() {
+  "$ROOT_DIR/modules/install_external_tools.sh" "$1"
 }
 
 # function to run firewall module based on selected ROLE and detected/selected firewall
 apply_firewall() {
-  require_root_or_sudo
   # Detect or confirm firewall to use
   confirm_or_select_firewall
   log "Using firewall: $FIREWALL_TYPE ($FIREWALL_CMD)"
 
   echo
-  warn "Controller guardrail: module will enforce default-deny inbound and allow only ROLE TCP ports."
+  warn "Module will enforce default-deny inbound and allow only ROLE TCP ports."
   warn "ROLE='$ROLE' TCP allowed: ${PORTS_TCP[*]:-(none)}"
   warn "If ports are wrong, scoring services may break until fixed."
   if ! prompt_yes_no "Continue to firewall module?"; then
@@ -158,28 +170,26 @@ apply_firewall() {
   fi
 
   case "$FIREWALL_TYPE" in
-    ufw)       sudo "$ROOT_DIR/modules/firewall/ufw.sh" ;;
-    firewalld) sudo "$ROOT_DIR/modules/firewall/firewalld.sh" ;;
+    ufw)       "$ROOT_DIR/modules/firewall/ufw.sh" ;;
+    firewalld) "$ROOT_DIR/modules/firewall/firewalld.sh" ;;
     *) die "Unsupported FIREWALL_TYPE: $FIREWALL_TYPE" ;;
   esac
-}
-
-# function to run splunk forwarder module
-run_splunk_forwarder_module() {
-  require_root_or_sudo
-  sudo "$ROOT_DIR/modules/splunk_forwarder.sh"
 }
 
 # main menu loop
 main_menu() {
   local options=(
-    "Pre-flight status (recommended first)"
-    "Baseline hardening (safe)"
-    "Disable SSH (Proxmox console access assumed)"
-    "Validate role services (recommended before firewall)"
+    "Check Configuration File - Not Implemented"
+    "Pre-flight status: Quick overview of system status"
+    "Baseline hardening (safe) - Not Implemented"
+    "Disable SSH"
+    "Validate role services - Scan expected services for selected role"
     "Select/Change Role"
-    "Enable firewall (default deny inbound; allow only role TCP ports)"
+    "Enable firewall (default deny inbound; allow only role TCP ports; block SSH explicitly)"
     "Install Splunk Universal Forwarder (uses config.sh SPLUNK_INDEXER_IP)"
+    "Install Suricata"
+    "Install ClamAV"
+    "Install WAZUH"
     "Exit"
   )
 
@@ -187,26 +197,38 @@ main_menu() {
   while true; do
     choice="$(prompt_choice "Select an action:" options[@])"
     case "$choice" in
-      "Pre-flight status (recommended first)")
+      "Check Configuration File - Not Implemented")
+        warn "Not implemented."
+        ;;
+      "Pre-flight status: Quick overview of system status")
         run_preflight_module
         ;;
-      "Baseline hardening (safe)")
+      "Baseline hardening (safe) - Not Implemented")
         run_baseline_module
         ;;
-      "Disable SSH (Proxmox console access assumed)")
+      "Disable SSH")
         run_disable_ssh_module
         ;;
-      "Validate role services (recommended before firewall)")
+      "Validate role services - Scan expected services for selected role")
         run_validate_role_module
         ;;
       "Select/Change Role")
         select_role
         ;;
-      "Enable firewall (default deny inbound; allow only role TCP ports)")
+      "Enable firewall (default deny inbound; allow only role TCP ports; block SSH explicitly)")
         apply_firewall
         ;;
       "Install Splunk Universal Forwarder (uses config.sh SPLUNK_INDEXER_IP)")
         run_splunk_forwarder_module
+        ;;
+      "Install Suricata")
+        run_external_tool_install_module "suricata"
+        ;;
+      "Install ClamAV")
+        run_external_tool_install_module "clamav"
+        ;;
+      "Install WAZUH")
+        run_external_tool_install_module "wazuh"
         ;;
       "Exit")
         exit 0
@@ -220,6 +242,7 @@ main_menu() {
 
 # Main entry point
 main() {
+  require_root_or_sudo
   detect_os_and_pkg
   ensure_exec_deps
   if [[ -n "${OS_FAMILY:-}" ]]; then
