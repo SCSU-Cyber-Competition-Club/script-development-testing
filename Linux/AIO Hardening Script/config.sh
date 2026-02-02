@@ -29,7 +29,8 @@ PORTS_WEBMAIL_TCP=(25 465 587 110 995 143 993 80 443)
 # Web UI: 8000
 # Management: 8089
 # Forwarder receiving: 9997 (common)
+# Forwarder receiving: 514 (syslog, needed for Cisco FW)
 # HEC: 8088 (optional; include if you use it)
-PORTS_SPLUNK_TCP=(8000 8089 9997)
+PORTS_SPLUNK_TCP=(514 8000 8089 9997)
 
 # --------- Host / dependency info ---------
