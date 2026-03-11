@@ -2,7 +2,6 @@
 # main.sh
 # Controller / menu logic for AIO Hardening Script
 # Written by Colin Robertson
-# Intended for use with main.sh
 # Requirements: Requires config.sh and lib/* to exist; exports ROLE and PORTS_TCP for modules
 # Version 1.0
 # Last updated 02-01-2026
@@ -91,7 +90,13 @@ export PORTS_TCP=()
 
 # set and export ROLE and associated PORTS_TCP based on selection
 set_role_ports() {
-  local role="$1"
+  local role="${1:-}"
+
+  # normalize common bad input cases
+  role="${role//$'\r'/}"                         # strip carriage returns
+  role="$(printf '%s' "$role" | xargs)"         # trim leading/trailing whitespace
+  role="${role,,}"                              # lowercase
+
   ROLE="$role"
   PORTS_TCP=()
 
@@ -99,7 +104,8 @@ set_role_ports() {
     ecomm)   PORTS_TCP=("${PORTS_ECOMM_TCP[@]}") ;;
     webmail) PORTS_TCP=("${PORTS_WEBMAIL_TCP[@]}") ;;
     splunk)  PORTS_TCP=("${PORTS_SPLUNK_TCP[@]}") ;;
-    *) die "Unknown role: $ROLE" ;;
+    "") die "No role was selected." ;;
+    *)  die "Unknown role: '$ROLE'" ;;
   esac
 
   export ROLE PORTS_TCP
@@ -114,10 +120,10 @@ select_role() {
     if prompt_yes_no "Default role is '${DEFAULT_ROLE}'. Use this role?"; then
       chosen="$DEFAULT_ROLE"
     else
-      chosen="$(prompt_choice "Select service role:" options[@])"
+      chosen="$(prompt_choice "Select service role:" options)"
     fi
   else
-    chosen="$(prompt_choice "Select service role:" options[@])"
+    chosen="$(prompt_choice "Select service role:" options)"
   fi
 
   set_role_ports "$chosen"
