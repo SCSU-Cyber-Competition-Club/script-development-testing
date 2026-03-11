@@ -1,270 +1,402 @@
 #!/usr/bin/env bash
-# main.sh
-# Controller / menu logic for AIO Hardening Script
-# Written by Colin Robertson
-# Requirements: Requires config.sh and lib/* to exist; exports ROLE and PORTS_TCP for modules
-# Version 1.0
-# Last updated 02-01-2026
+# main.sh - AIO Hardening Script Master Controller
+# Single entry point for all phases
+# Part of AIO Hardening Script for CCDC competitions
 
-# Enable strict error handling
 set -euo pipefail
 IFS=$'\n\t'
 
-# Determine script root directory
-ROOT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+# Determine script root
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
+# Source libraries
 # shellcheck source=/dev/null
-. "$ROOT_DIR/config.sh"
+. "$SCRIPT_DIR/lib/logging.sh"
 # shellcheck source=/dev/null
-. "$ROOT_DIR/lib/logging.sh"
-# shellcheck source=/dev/null
-. "$ROOT_DIR/lib/prompts.sh"
-# shellcheck source=/dev/null
-. "$ROOT_DIR/lib/detect.sh"
+. "$SCRIPT_DIR/lib/prompts.sh"
 
-ensure_exec_deps() {
-  # Check that required scripts exist and are executable
-  local deps=(
-    "$ROOT_DIR/modules/preflight.sh"
-    "$ROOT_DIR/modules/disable_ssh.sh"
-    "$ROOT_DIR/modules/validate_role.sh"
-    "$ROOT_DIR/modules/baseline.sh"
-    "$ROOT_DIR/modules/firewall/ufw.sh"
-    "$ROOT_DIR/modules/firewall/firewalld.sh"
-    "$ROOT_DIR/modules/splunk_forwarder.sh"
-    "$ROOT_DIR/linuxSplunkForwarderInstall.sh"
-    "$ROOT_DIR/modules/install_external_tools.sh"
-  )
+# Configuration
+LOG_DIR="/var/log/aio_hardening"
+START_TIME=$SECONDS
 
-  local missing=()
-  local need_chmod=()
+# Ensure log directory exists
+mkdir -p "$LOG_DIR"
 
-  local f
-  for f in "${deps[@]}"; do
-    if [[ ! -f "$f" ]]; then
-      missing+=("$f")
-      continue
-    fi
-    if [[ ! -x "$f" ]]; then
-      need_chmod+=("$f")
-    fi
-  done
-
-  # Report missing files and exit
-  if (( ${#missing[@]} > 0 )); then
-    warn "Missing required files:"
-    for f in "${missing[@]}"; do
-      warn "  - $f"
-    done
-    die "Cannot continue until missing files are restored."
-  fi
-
-  # Report non-executable files and offer to fix
-  if (( ${#need_chmod[@]} == 0 )); then
-    log "Executable dependencies: OK"
-    return 0
-  fi
-  warn "Some required scripts are not executable:"
-  for f in "${need_chmod[@]}"; do
-    warn "  - $f"
-  done
-
-  # Prompt to fix non-executable scripts
-  if ! prompt_yes_no "Set executable permission (chmod +x) for these files now?"; then
-    die "Required scripts are not executable. Aborting."
-  fi
-
-  # Needs root if files are owned by root or extracted with restrictive perms.
-  local chmod_cmd=(chmod +x)
-  if [[ "${EUID:-$(id -u)}" -ne 0 ]]; then
-    chmod_cmd=(chmod +x)
-  fi
-
-  "${chmod_cmd[@]}" "${need_chmod[@]}"
-  log "Set +x on required scripts."
+show_banner() {
+    cat << 'BANNER'
+╔═══════════════════════════════════════════════════════════════╗
+║                                                               ║
+║              AIO HARDENING SCRIPT - MAIN MENU                 ║
+║                                                               ║
+║        Comprehensive Hardening for CCDC Competitions          ║
+║                                                               ║
+╚═══════════════════════════════════════════════════════════════╝
+BANNER
 }
 
-# initializze ROLE and PORTS_TCP
-export ROLE=""
-export PORTS_TCP=()
-
-# set and export ROLE and associated PORTS_TCP based on selection
-set_role_ports() {
-  local role="${1:-}"
-
-  # normalize common bad input cases
-  role="${role//$'\r'/}"                         # strip carriage returns
-  role="$(printf '%s' "$role" | xargs)"         # trim leading/trailing whitespace
-  role="${role,,}"                              # lowercase
-
-  ROLE="$role"
-  PORTS_TCP=()
-
-  case "$ROLE" in
-    ecomm)   PORTS_TCP=("${PORTS_ECOMM_TCP[@]}") ;;
-    webmail) PORTS_TCP=("${PORTS_WEBMAIL_TCP[@]}") ;;
-    splunk)  PORTS_TCP=("${PORTS_SPLUNK_TCP[@]}") ;;
-    "") die "No role was selected." ;;
-    *)  die "Unknown role: '$ROLE'" ;;
-  esac
-
-  export ROLE PORTS_TCP
+show_menu() {
+    echo ""
+    echo "════════════════════════════════════════════════════════════"
+    echo " AVAILABLE PHASES"
+    echo "════════════════════════════════════════════════════════════"
+    echo ""
+    
+    # Check what's completed
+    local phase1_status="[ ]"
+    local phase2_status="[ ]"
+    local phase3_status="[ ]"
+    
+    if [[ -f "$LOG_DIR/.phase1_complete" ]]; then
+        phase1_status="[✓]"
+    fi
+    if [[ -f "$LOG_DIR/.phase2_complete" ]]; then
+        phase2_status="[✓]"
+    fi
+    if [[ -f "$LOG_DIR/.phase3_complete" ]]; then
+        phase3_status="[✓]"
+    fi
+    
+    echo "  1. ${phase1_status} Phase 1: Emergency Lockdown (2-5 min)"
+    echo "      - Emergency firewall, SSH termination, user creation"
+    echo "      - Kernel hardening, process cleanup"
+    echo ""
+    echo "  2. ${phase2_status} Phase 2: Comprehensive Hardening (15-25 min)"
+    echo "      - Deep system hardening, service configuration"
+    echo "      - Active monitoring, enumeration tools"
+    echo ""
+    echo "  3. ${phase3_status} Phase 3: External Tools & Utilities (variable)"
+    echo "      - Security tools (AIDE, Fail2Ban, etc.)"
+    echo "      - Utility scripts (backups, log checking, etc.)"
+    echo ""
+    echo "  4. Run All Phases (Phase 1 → 2 → 3)"
+    echo ""
+    echo "  5. Quick Actions Menu"
+    echo "      - Verify hardening, check services, view logs"
+    echo ""
+    echo "  6. Exit"
+    echo ""
+    echo "════════════════════════════════════════════════════════════"
 }
 
-# Prompt user to select service role
-select_role() {
-  local options=("ecomm" "webmail" "splunk")
-  local chosen=""
-
-  if [[ -n "${DEFAULT_ROLE:-}" ]]; then
-    if prompt_yes_no "Default role is '${DEFAULT_ROLE}'. Use this role?"; then
-      chosen="$DEFAULT_ROLE"
+run_phase1() {
+    log "Starting Phase 1: Emergency Lockdown"
+    
+    if [[ ! -f "$SCRIPT_DIR/phase1_main.sh" ]]; then
+        error "Phase 1 script not found: $SCRIPT_DIR/phase1_main.sh"
+        return 1
+    fi
+    
+    # Temporarily disable exit on error for this call
+    set +e
+    "$SCRIPT_DIR/phase1_main.sh"
+    local exit_code=$?
+    set -e
+    
+    if [[ $exit_code -eq 0 ]]; then
+        success "Phase 1 completed successfully"
+        return 0
     else
-      chosen="$(prompt_choice "Select service role:" options[@])"
+        error "Phase 1 failed or was cancelled"
+        warn "Check logs for details: $LOG_DIR/aio_master.log"
+        echo ""
+        log "Returning to main menu..."
+        sleep 2
+        return 1
     fi
-  else
-    chosen="$(prompt_choice "Select service role:" options[@])"
-  fi
-
-  set_role_ports "$chosen"
-  log "ROLE set to '$ROLE' (TCP allowed: ${PORTS_TCP[*]:-(none)})"
 }
 
-# function to run preflight module
-run_preflight_module() {
-  "$ROOT_DIR/modules/preflight.sh"
+run_phase2() {
+    log "Starting Phase 2: Comprehensive Hardening"
+    
+    # Check if Phase 1 was run
+    if [[ ! -f "$LOG_DIR/.phase1_complete" ]]; then
+        warn "Phase 1 has not been run yet"
+        if ! prompt_yes_no "Run Phase 2 anyway? (not recommended)"; then
+            return 1
+        fi
+    fi
+    
+    if [[ ! -f "$SCRIPT_DIR/phase2_main.sh" ]]; then
+        error "Phase 2 script not found: $SCRIPT_DIR/phase2_main.sh"
+        return 1
+    fi
+    
+    # Temporarily disable exit on error for this call
+    set +e
+    "$SCRIPT_DIR/phase2_main.sh"
+    local exit_code=$?
+    set -e
+    
+    if [[ $exit_code -eq 0 ]]; then
+        success "Phase 2 completed successfully"
+        return 0
+    else
+        error "Phase 2 failed or was cancelled"
+        warn "Check logs for details: $LOG_DIR/aio_master.log"
+        echo ""
+        log "Returning to main menu..."
+        sleep 2
+        return 1
+    fi
 }
 
-# function to run disable ssh module
-run_disable_ssh_module() {
-  "$ROOT_DIR/modules/disable_ssh.sh"
+run_phase3() {
+    log "Starting Phase 3: External Tools & Utilities"
+    
+    # Check if Phase 2 was run
+    if [[ ! -f "$LOG_DIR/.phase2_complete" ]]; then
+        warn "Phase 2 has not been run yet"
+        warn "Phase 3 works best after Phase 2 hardening"
+        if ! prompt_yes_no "Run Phase 3 anyway?"; then
+            return 1
+        fi
+    fi
+    
+    if [[ ! -f "$SCRIPT_DIR/phase3_main.sh" ]]; then
+        error "Phase 3 script not found: $SCRIPT_DIR/phase3_main.sh"
+        return 1
+    fi
+    
+    # Temporarily disable exit on error for this call
+    set +e
+    "$SCRIPT_DIR/phase3_main.sh"
+    local exit_code=$?
+    set -e
+    
+    if [[ $exit_code -eq 0 ]]; then
+        success "Phase 3 completed successfully"
+        return 0
+    else
+        error "Phase 3 failed or was cancelled"
+        warn "Check logs for details: $LOG_DIR/aio_master.log"
+        echo ""
+        log "Returning to main menu..."
+        sleep 2
+        return 1
+    fi
 }
 
-# function to run validate role module
-run_validate_role_module() {
-  "$ROOT_DIR/modules/validate_role.sh"
+run_all_phases() {
+    log "Running all phases sequentially..."
+    echo ""
+    
+    # Phase 1
+    if [[ ! -f "$LOG_DIR/.phase1_complete" ]]; then
+        log "═══ Starting Phase 1 ═══"
+        run_phase1 || return 1
+        echo ""
+    else
+        log "Phase 1 already completed (skipping)"
+        echo ""
+    fi
+    
+    # Phase 2
+    if [[ ! -f "$LOG_DIR/.phase2_complete" ]]; then
+        log "═══ Starting Phase 2 ═══"
+        run_phase2 || return 1
+        echo ""
+    else
+        log "Phase 2 already completed (skipping)"
+        echo ""
+    fi
+    
+    # Phase 3
+    if [[ ! -f "$LOG_DIR/.phase3_complete" ]]; then
+        log "═══ Starting Phase 3 ═══"
+        run_phase3 || return 1
+        echo ""
+    else
+        log "Phase 3 already completed (skipping)"
+        echo ""
+    fi
+    
+    success "All phases completed!"
 }
 
-# function to run baseline hardening module
-run_baseline_module() {
-  "$ROOT_DIR/modules/baseline.sh"
+quick_actions_menu() {
+    while true; do
+        echo ""
+        echo "════════════════════════════════════════════════════════════"
+        echo " QUICK ACTIONS"
+        echo "════════════════════════════════════════════════════════════"
+        echo ""
+        echo "  1. Verify Hardening Status"
+        echo "  2. Check Service Health"
+        echo "  3. View Red Flags (last hour)"
+        echo "  4. View Logs"
+        echo "  5. Run Port Enumeration"
+        echo "  6. Run Service Enumeration"
+        echo "  7. Run User Enumeration"
+        echo "  8. Back to Main Menu"
+        echo ""
+        
+        read -r -p "Selection [1-8]: " action_choice
+        
+        case "$action_choice" in
+            1)
+                if command -v aio-verify >/dev/null 2>&1; then
+                    aio-verify
+                else
+                    warn "aio-verify not installed. Run Phase 2 first."
+                fi
+                ;;
+            2)
+                if command -v aio-check-services >/dev/null 2>&1; then
+                    aio-check-services
+                else
+                    warn "aio-check-services not installed. Run Phase 2 first."
+                fi
+                ;;
+            3)
+                if command -v aio-redflags >/dev/null 2>&1; then
+                    aio-redflags --last-hour
+                else
+                    warn "aio-redflags not installed. Run Phase 2 first."
+                fi
+                ;;
+            4)
+                echo ""
+                echo "Recent log entries:"
+                tail -30 "$LOG_DIR/aio_master.log" 2>/dev/null || echo "No logs found"
+                ;;
+            5)
+                if command -v aio-enum-ports >/dev/null 2>&1; then
+                    aio-enum-ports
+                else
+                    warn "aio-enum-ports not installed. Run Phase 2 first."
+                fi
+                ;;
+            6)
+                if command -v aio-enum-services >/dev/null 2>&1; then
+                    aio-enum-services
+                else
+                    warn "aio-enum-services not installed. Run Phase 2 first."
+                fi
+                ;;
+            7)
+                if command -v aio-enum-users >/dev/null 2>&1; then
+                    aio-enum-users
+                else
+                    warn "aio-enum-users not installed. Run Phase 2 first."
+                fi
+                ;;
+            8)
+                return 0
+                ;;
+            *)
+                warn "Invalid selection"
+                ;;
+        esac
+        
+        echo ""
+        read -r -p "Press Enter to continue..."
+    done
 }
 
-# function to run splunk forwarder module
-run_splunk_forwarder_module() {
-  "$ROOT_DIR/modules/splunk_forwarder.sh"
-}
-
-# function to run external tool installation module
-run_external_tool_install_module() {
-  "$ROOT_DIR/modules/install_external_tools.sh" "$1"
-}
-
-# function to run firewall module based on selected ROLE and detected/selected firewall
-apply_firewall() {
-  # Detect or confirm firewall to use
-  confirm_or_select_firewall
-  log "Using firewall: $FIREWALL_TYPE ($FIREWALL_CMD)"
-
-  echo
-  warn "Module will enforce default-deny inbound and allow only ROLE TCP ports."
-  warn "ROLE='$ROLE' TCP allowed: ${PORTS_TCP[*]:-(none)}"
-  warn "If ports are wrong, scoring services may break until fixed."
-  if ! prompt_yes_no "Continue to firewall module?"; then
-    log "Aborted."
-    return 0
-  fi
-
-  case "$FIREWALL_TYPE" in
-    ufw)       "$ROOT_DIR/modules/firewall/ufw.sh" ;;
-    firewalld) "$ROOT_DIR/modules/firewall/firewalld.sh" ;;
-    *) die "Unsupported FIREWALL_TYPE: $FIREWALL_TYPE" ;;
-  esac
-}
-
-# main menu loop
 main_menu() {
-  local options=(
-    "Check Configuration File - Not Implemented"
-    "Pre-flight status: Quick overview of system status"
-    "Baseline hardening (safe) - Not Implemented"
-    "Disable SSH"
-    "Validate role services - Scan expected services for selected role"
-    "Select/Change Role"
-    "Enable firewall (default deny inbound; allow only role TCP ports; block SSH explicitly)"
-    "Install Splunk Universal Forwarder (uses config.sh SPLUNK_INDEXER_IP)"
-    "Install Suricata"
-    "Install ClamAV"
-    "Install WAZUH"
-    "Exit"
-  )
+    while true; do
+        show_banner
+        show_menu
+        
+        read -r -p "Selection [1-6]: " choice
+        
+        case "$choice" in
+            1)
+                echo ""
+                run_phase1 || true
+                echo ""
+                read -r -p "Press Enter to continue..."
+                ;;
+            2)
+                echo ""
+                run_phase2 || true
+                echo ""
+                read -r -p "Press Enter to continue..."
+                ;;
+            3)
+                echo ""
+                run_phase3 || true
+                echo ""
+                read -r -p "Press Enter to continue..."
+                ;;
+            4)
+                echo ""
+                if prompt_yes_no "Run all phases sequentially?"; then
+                    run_all_phases || true
+                fi
+                echo ""
+                read -r -p "Press Enter to continue..."
+                ;;
+            5)
+                quick_actions_menu
+                ;;
+            6)
+                echo ""
+                log "Exiting AIO Hardening Script"
+                
+                # Calculate total time
+                ELAPSED=$((SECONDS - START_TIME))
+                MINUTES=$((ELAPSED / 60))
+                SECS=$((ELAPSED % 60))
+                
+                echo ""
+                echo "Session duration: ${MINUTES}m ${SECS}s"
+                echo "Logs available at: $LOG_DIR/"
+                echo ""
+                exit 0
+                ;;
+            *)
+                warn "Invalid selection. Please choose 1-6."
+                sleep 1
+                ;;
+        esac
+    done
+}
 
-  local choice
-  while true; do
-    choice="$(prompt_choice "Select an action:" options[@])"
-    case "$choice" in
-      "Check Configuration File - Not Implemented")
-        warn "Not implemented."
+# Pre-main checks
+if [[ "${EUID:-$(id -u)}" -ne 0 ]]; then
+    echo "ERROR: AIO Hardening Script must be run as root"
+    echo "Usage: sudo $0"
+    exit 1
+fi
+
+# Handle command line arguments
+case "${1:-}" in
+    --phase1)
+        run_phase1
+        exit $?
         ;;
-      "Pre-flight status: Quick overview of system status")
-        run_preflight_module
+    --phase2)
+        run_phase2
+        exit $?
         ;;
-      "Baseline hardening (safe) - Not Implemented")
-        run_baseline_module
+    --phase3)
+        run_phase3
+        exit $?
         ;;
-      "Disable SSH")
-        run_disable_ssh_module
+    --all)
+        run_all_phases
+        exit $?
         ;;
-      "Validate role services - Scan expected services for selected role")
-        run_validate_role_module
-        ;;
-      "Select/Change Role")
-        select_role
-        ;;
-      "Enable firewall (default deny inbound; allow only role TCP ports; block SSH explicitly)")
-        apply_firewall
-        ;;
-      "Install Splunk Universal Forwarder (uses config.sh SPLUNK_INDEXER_IP)")
-        run_splunk_forwarder_module
-        ;;
-      "Install Suricata")
-        run_external_tool_install_module "suricata"
-        ;;
-      "Install ClamAV")
-        run_external_tool_install_module "clamav"
-        ;;
-      "Install WAZUH")
-        run_external_tool_install_module "wazuh"
-        ;;
-      "Exit")
+    --help|-h)
+        echo "Usage: sudo $0 [option]"
+        echo ""
+        echo "Options:"
+        echo "  (no option)    Interactive menu"
+        echo "  --phase1       Run Phase 1 only"
+        echo "  --phase2       Run Phase 2 only"
+        echo "  --phase3       Run Phase 3 only"
+        echo "  --all          Run all phases sequentially"
+        echo "  --help         Show this help"
         exit 0
         ;;
-      *)
-        warn "Invalid selection."
+    "")
+        # No arguments, run interactive menu
+        main_menu
         ;;
-    esac
-  done
-}
-
-# Main entry point
-main() {
-  require_root_or_sudo
-  detect_os_and_pkg
-  ensure_exec_deps
-  if [[ -n "${OS_FAMILY:-}" ]]; then
-    log "Detected OS_FAMILY=$OS_FAMILY, PKG_CMD=${PKG_CMD:-<none>}"
-  else
-    warn "Could not reliably detect OS_FAMILY from /etc/os-release."
-  fi
-
-  # Role selection up front (ports depend on it)
-  select_role
-
-  # Initial firewall detection
-  confirm_or_select_firewall
-  log "Firewall selected: $FIREWALL_TYPE ($FIREWALL_CMD)"
-
-  main_menu
-}
-
-main "$@"
+    *)
+        echo "Unknown option: $1"
+        echo "Run with --help for usage"
+        exit 1
+        ;;
+esac
