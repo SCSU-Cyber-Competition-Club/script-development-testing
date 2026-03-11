@@ -120,10 +120,10 @@ select_role() {
     if prompt_yes_no "Default role is '${DEFAULT_ROLE}'. Use this role?"; then
       chosen="$DEFAULT_ROLE"
     else
-      chosen="$(prompt_choice "Select service role:" options)"
+      chosen="$(prompt_choice "Select service role:" options[@])"
     fi
   else
-    chosen="$(prompt_choice "Select service role:" options)"
+    chosen="$(prompt_choice "Select service role:" options[@])"
   fi
 
   set_role_ports "$chosen"
